@@ -190,14 +190,23 @@ const Report = (() => {
       ...tableStyle,
       startY: y,
       head: [["Indicator", "Value"]],
-      body: [
-        ["Sublocations analysed", String(ctx.kpis.units)],
+      body: ctx.hasAssets ? [
+        [`${ctx.unitLabel} analysed`, String(ctx.kpis.units)],
         [`${ctx.assetLabel} assessed`, ctx.kpis.assets.toLocaleString()],
         [`${ctx.assetLabel} in very high risk zones`,
          `${ctx.kpis.veryHigh.toLocaleString()}  (${ctx.kpis.veryHighPct}%)`],
         [`${ctx.assetLabel} in high or very high risk zones`,
          `${ctx.kpis.highPlus.toLocaleString()}  (${ctx.kpis.highPlusPct}%)`],
-        ["Sublocations with no demographic data",
+        [`${ctx.unitLabel} with no demographic data`,
+         String(ctx.schemes[ctx.componentKey].excluded)]
+      ] : [
+        [`${ctx.unitLabel} analysed`, String(ctx.kpis.units)],
+        [`${ctx.unitLabel} classified`, ctx.kpis.assets.toLocaleString()],
+        [`${ctx.unitLabel} in the highest ${ctx.componentLabel.toLowerCase()} class`,
+         `${ctx.kpis.veryHigh.toLocaleString()}  (${ctx.kpis.veryHighPct}%)`],
+        [`${ctx.unitLabel} in the top two ${ctx.componentLabel.toLowerCase()} classes`,
+         `${ctx.kpis.highPlus.toLocaleString()}  (${ctx.kpis.highPlusPct}%)`],
+        [`${ctx.unitLabel} with no data`,
          String(ctx.schemes[ctx.componentKey].excluded)]
       ],
       columnStyles: { 1: { halign: "right", fontStyle: "bold" } }
@@ -207,7 +216,9 @@ const Report = (() => {
     /* Chart A */
     const barImg = Charts.chartImage("assets", { width: 780, height: 340 });
     if (barImg) {
-      y = sectionTitle(doc, `${ctx.assetLabel} by flood risk zone`, y);
+      y = sectionTitle(doc, ctx.hasAssets
+        ? `${ctx.assetLabel} by flood risk zone`
+        : `${ctx.unitLabel} by ${ctx.componentLabel.toLowerCase()} class`, y);
       const h = BODY_W * (340 / 780);
       doc.addImage(barImg, "PNG", MARGIN, y, BODY_W, h);
       y += h + 8;
@@ -218,7 +229,7 @@ const Report = (() => {
     if (donutImg) {
       if (y > PAGE_H - 80) { doc.addPage(); y = header(doc, logo, ctx); }
       y = sectionTitle(doc,
-        `Sublocations by ${ctx.componentLabel.toLowerCase()} class`, y);
+        `${ctx.unitLabel} by ${ctx.componentLabel.toLowerCase()} class`, y);
       const h = BODY_W * (340 / 780);
       doc.addImage(donutImg, "PNG", MARGIN, y, BODY_W, h);
       y += h + 6;
@@ -229,15 +240,16 @@ const Report = (() => {
     y = header(doc, logo, ctx);
 
     /* Top 5 by component */
+    const un = ctx.unitLabel.toLowerCase();
     const titleA = ctx.inverted
-      ? "Five sublocations with the lowest adaptive capacity"
-      : `Five sublocations with the highest ${ctx.componentLabel.toLowerCase()}`;
+      ? `Five ${un} with the lowest ${ctx.componentLabel.toLowerCase()}`
+      : `Five ${un} with the highest ${ctx.componentLabel.toLowerCase()}`;
     y = sectionTitle(doc, titleA, y);
 
     doc.autoTable({
       ...tableStyle,
       startY: y,
-      head: [["#", "Sublocation", ctx.componentLabel, "Class"]],
+      head: [["#", ctx.unitLabelOne.charAt(0).toUpperCase() + ctx.unitLabelOne.slice(1), ctx.componentLabel, "Class"]],
       body: ctx.topComponent.map((r, i) => [
         String(i + 1), r.name, fmt(r.value), DataService.classLabel(r.cls)
       ]),
@@ -249,24 +261,40 @@ const Report = (() => {
     });
     y = doc.lastAutoTable.finalY + 9;
 
-    /* Top 5 by very-high-risk assets */
-    y = sectionTitle(doc,
-      `Five sublocations with the most very-high-risk ${ctx.assetLabel.toLowerCase()}`, y);
-
-    doc.autoTable({
-      ...tableStyle,
-      startY: y,
-      head: [["#", "Sublocation", "Very high risk", "Total", "Share"]],
-      body: ctx.topAssets.map((r, i) => [
-        String(i + 1), r.name, String(r.value), String(r.total),
-        r.total ? `${((r.value / r.total) * 100).toFixed(0)}%` : "—"
-      ]),
-      columnStyles: {
-        0: { cellWidth: 10, halign: "center" },
-        2: { halign: "right" }, 3: { halign: "right" }, 4: { halign: "right" }
-      }
-    });
-    y = doc.lastAutoTable.finalY + 9;
+    /* Second ranking */
+    if (ctx.hasAssets) {
+      y = sectionTitle(doc,
+        `Five ${un} with the most very-high-risk ${ctx.assetLabel.toLowerCase()}`, y);
+      doc.autoTable({
+        ...tableStyle,
+        startY: y,
+        head: [["#", ctx.unitLabelOne.charAt(0).toUpperCase() + ctx.unitLabelOne.slice(1),
+                "Very high risk", "Total", "Share"]],
+        body: ctx.topAssets.map((r, i) => [
+          String(i + 1), r.name, String(r.value), String(r.total),
+          r.total ? `${((r.value / r.total) * 100).toFixed(0)}%` : "—"
+        ]),
+        columnStyles: {
+          0: { cellWidth: 10, halign: "center" },
+          2: { halign: "right" }, 3: { halign: "right" }, 4: { halign: "right" }
+        }
+      });
+      y = doc.lastAutoTable.finalY + 9;
+    } else if (ctx.secondaryLabel && ctx.topAssets && ctx.topAssets.length) {
+      y = sectionTitle(doc,
+        `Five ${un} with the highest ${ctx.secondaryLabel.toLowerCase()}`, y);
+      doc.autoTable({
+        ...tableStyle,
+        startY: y,
+        head: [["#", ctx.unitLabelOne.charAt(0).toUpperCase() + ctx.unitLabelOne.slice(1),
+                ctx.secondaryLabel]],
+        body: ctx.topAssets.map((r, i) => [
+          String(i + 1), r.name, fmt(r.value)
+        ]),
+        columnStyles: { 0: { cellWidth: 10, halign: "center" }, 2: { halign: "right" } }
+      });
+      y = doc.lastAutoTable.finalY + 9;
+    }
 
     /* Method and caveats */
     y = sectionTitle(doc, "Method and caveats", y);
@@ -282,22 +310,24 @@ const Report = (() => {
 
     if (scheme.excluded > 0) {
       y = paragraph(doc,
-        `${scheme.excluded} of ${ctx.features.length} sublocations carry no ` +
-        `demographic data. Their sensitivity, adaptive capacity, vulnerability ` +
-        `and risk values are absent rather than zero, and they are excluded from ` +
-        `classification, charts and rankings. Exposure is independent of ` +
-        `population and remains valid for all sublocations.`, y);
+        `${scheme.excluded} of ${ctx.features.length} ${un} carry no data for ` +
+        `this component and are excluded from classification, charts and ` +
+        `rankings rather than counted as zero.`, y);
     }
 
-    y = paragraph(doc,
-      `Adaptive capacity is inverted: a high value is a good outcome. It is ` +
-      `symbolised on a reversed ramp so that red always denotes the worst ` +
-      `condition, whichever component is mapped, and it is ranked lowest-first.`, y);
+    if (ctx.inverted) {
+      y = paragraph(doc,
+        `${ctx.componentLabel} is inverted: a high value is a good outcome. It is ` +
+        `symbolised on a reversed ramp so that red always denotes the worst ` +
+        `condition, whichever component is mapped, and it is ranked lowest-first.`, y);
+    }
 
-    y = paragraph(doc,
-      `Health facilities were assigned to sublocations by point-in-polygon ` +
-      `overlay rather than by attribute join, as the facility sublocation field ` +
-      `is inconsistently named.`, y);
+    if (ctx.hasAssets) {
+      y = paragraph(doc,
+        `${ctx.assetLabel} were assigned to ${un} by point-in-polygon overlay ` +
+        `rather than by attribute join, as the asset location field is ` +
+        `inconsistently named.`, y);
+    }
 
     y = paragraph(doc, `Data sources: ${CRVA_CONFIG.meta.source}.`, y);
 

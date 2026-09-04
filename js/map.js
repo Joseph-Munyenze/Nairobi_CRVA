@@ -13,6 +13,8 @@ const MapView = (() => {
   let hazardRenderer = null;
   let featureIndex = new Map();   // polygon name -> leaflet layer
   let assetFilterParent = null;   // when set, only assets in this polygon show
+  let activeHazardCfg = null;     // hazard cfg currently rendered, for the legend
+  let activeHazardContScheme = null;
   let onFeatureClick = null;
   let panelCtl = null;
   let indexOpacity = 0.80;        // choropleth fill opacity, user-adjustable
@@ -28,29 +30,26 @@ const MapView = (() => {
       preferCanvas: true
     });
 
-    const CARTO = "&copy; OpenStreetMap contributors &copy; CARTO";
     const ESRI  = "Esri, Maxar, Earthstar Geographics";
+    const ESRIC = "Esri, HERE, Garmin, &copy; OpenStreetMap contributors";
 
+    // All keyless. CARTO tiles were dropped because their CDN now returns an
+    // "API key required" wall at higher zooms.
     baseLayers = {
-      positron: {
-        label: "Light (CARTO Positron)",
-        layer: L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
-          { attribution: CARTO, maxZoom: 19 })
+      light: {
+        label: "Light (Esri Canvas)",
+        layer: L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+          { attribution: ESRIC, maxZoom: 16 })
       },
-      voyager: {
-        label: "Streets (CARTO Voyager)",
-        layer: L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",
-          { attribution: CARTO, maxZoom: 19 })
-      },
-      dark: {
-        label: "Dark (CARTO Dark Matter)",
-        layer: L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
-          { attribution: CARTO, maxZoom: 19 })
-      },
-      osm: {
-        label: "OpenStreetMap",
+      streets: {
+        label: "Streets (OpenStreetMap)",
         layer: L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
           { attribution: "&copy; OpenStreetMap contributors", maxZoom: 19 })
+      },
+      dark: {
+        label: "Dark (Esri Dark Gray)",
+        layer: L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+          { attribution: ESRIC, maxZoom: 16 })
       },
       imagery: {
         label: "Satellite (Esri World Imagery)",
@@ -63,14 +62,14 @@ const MapView = (() => {
           { attribution: ESRI, maxZoom: 19 })
       },
       terrain: {
-        label: "Terrain (Esri World Physical)",
+        label: "Terrain (Esri NatGeo)",
         layer: L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/NatGeo_World_Map/MapServer/tile/{z}/{y}/{x}",
           { attribution: "Esri, National Geographic", maxZoom: 16 })
       },
       none: { label: "No basemap", layer: null }
     };
 
-    baseLayers.positron.layer.addTo(map);
+    baseLayers.light.layer.addTo(map);
 
     // Dedicated pane between the tiles (200) and the overlays (400) so the
     // hazard surface always sits under the choropleth, whatever the draw order.
@@ -117,7 +116,7 @@ const MapView = (() => {
    * layers: [{ key, label, checked, disabled, title }]
    * handlers: { onBasemap(key), onLayer(key, on), onOpacity(0-1) }
    */
-  function addControlPanel(layers, handlers, activeBasemap) {
+  function addControlPanel(layers, handlers, activeBasemap, hideOpacity) {
     if (panelCtl) { map.removeControl(panelCtl); panelCtl = null; }
 
     panelCtl = L.control({ position: "topright" });
@@ -139,6 +138,16 @@ const MapView = (() => {
           <span class="mp-box"></span><span>${l.label}</span>
         </label>`).join("");
 
+      const opacityBlock = hideOpacity ? "" : `
+            <div class="mp-slider">
+              <h5>Choropleth opacity
+                <span class="mp-val" id="mpOpacityVal">${Math.round(indexOpacity * 100)}%</span>
+              </h5>
+              <input type="range" id="mpOpacity" min="0" max="100" step="5"
+                     value="${Math.round(indexOpacity * 100)}" class="mp-range">
+              <p class="mp-hint">Turn down to read the hazard surface underneath.</p>
+            </div>`;
+
       root.innerHTML = `
         <div class="tool" data-tool="basemap">
           <button type="button" class="tool-btn" id="btnBasemap"
@@ -159,14 +168,7 @@ const MapView = (() => {
           <div class="tool-pop" id="popLayers" role="dialog" aria-label="Layers">
             <h5>Layers</h5>
             <div id="mpLayers">${lyOptions}</div>
-            <div class="mp-slider">
-              <h5>Choropleth opacity
-                <span class="mp-val" id="mpOpacityVal">${Math.round(indexOpacity * 100)}%</span>
-              </h5>
-              <input type="range" id="mpOpacity" min="0" max="100" step="5"
-                     value="${Math.round(indexOpacity * 100)}" class="mp-range">
-              <p class="mp-hint">Turn down to read the hazard surface underneath.</p>
-            </div>
+            ${opacityBlock}
           </div>
         </div>`;
 
@@ -205,11 +207,13 @@ const MapView = (() => {
       });
 
       const slider = root.querySelector("#mpOpacity");
-      slider.addEventListener("input", () => {
-        const pct = Number(slider.value);
-        root.querySelector("#mpOpacityVal").textContent = `${pct}%`;
-        handlers.onOpacity(pct / 100);
-      });
+      if (slider) {
+        slider.addEventListener("input", () => {
+          const pct = Number(slider.value);
+          root.querySelector("#mpOpacityVal").textContent = `${pct}%`;
+          handlers.onOpacity(pct / 100);
+        });
+      }
 
       panelCtl._div = root;
       return root;
@@ -300,12 +304,16 @@ const MapView = (() => {
       ? `<p class="lg-note">High adaptive capacity is good — ramp reversed so red is always worst.</p>`
       : "";
 
+    const hazCfg = (hazardOn && activeHazardCfg) ? activeHazardCfg : null;
+    const hazRamp = hazCfg ? hazardRampFor(hazCfg) : CRVA_CONFIG.floodRamp;
+    const hazName = hazCfg ? (hazCfg.label || "Hazard") : "Hazard";
     const hazardBlock = hazardOn ? `
       <div class="lg-sub">
-        <span class="lg-sub-title">Flood hazard</span>
+        <span class="lg-sub-title">${hazName}</span>
         <div class="lg-ramp">
-          ${CRVA_CONFIG.floodRamp.map(c => `<span class="lg-sw" style="background:${c}"></span>`).join("")}
+          ${hazRamp.map(c => `<span class="lg-sw" style="background:${c}"></span>`).join("")}
         </div>
+        <div class="lg-ends"><span>Very low</span><span>Very high</span></div>
       </div>` : "";
 
     legendCtl._div.innerHTML = `
@@ -332,6 +340,33 @@ const MapView = (() => {
 
   /* ---------------------------------------------------- index choropleth */
 
+  /* ---------------------------------------------------- index choropleth */
+
+  /** Legend for hazard-only mode: the hazard's five classes in its own ramp. */
+  function renderHazardLegend(hazardCfg) {
+    if (!legendCtl._div) return;
+    const ramp = hazardRampFor(hazardCfg);
+    const label = hazardCfg.label || "Hazard";
+    let swatches = "";
+    CRVA_CONFIG.classes.forEach((c, i) => {
+      swatches += `<span class="lg-sw" style="background:${ramp[i]}" title="${c.label}"></span>`;
+    });
+    legendCtl._div.innerHTML = `
+      <div class="lg-head">
+        <h4>${label}</h4>
+        <button type="button" class="lg-toggle" aria-label="Collapse legend">−</button>
+      </div>
+      <div class="lg-body">
+        <div class="lg-ramp">${swatches}</div>
+        <div class="lg-ends"><span>Very low</span><span>Very high</span></div>
+      </div>`;
+    const btn = legendCtl._div.querySelector(".lg-toggle");
+    btn.addEventListener("click", () => {
+      const collapsed = legendCtl._div.classList.toggle("is-collapsed");
+      btn.textContent = collapsed ? "+" : "−";
+    });
+  }
+
   function styleFor(feature, subsector, componentKey, scheme) {
     const v = DataService.getComponentValue(feature, subsector, componentKey);
     const cls = scheme.classOf(v);
@@ -347,7 +382,7 @@ const MapView = (() => {
   /** Popup HTML for an index polygon: all five components, raw value + class. */
   function indexPopup(feature, subsector, schemes) {
     const name = DataService.getField(feature, subsector.nameField);
-    const rows = CRVA_CONFIG.components.map(c => {
+    const rows = DataService.componentsFor(subsector).map(c => {
       const v = DataService.getComponentValue(feature, subsector, c.key);
       const cls = schemes[c.key].classOf(v);
       const chip = `<span class="chip" style="background:${DataService.colorForClass(cls, c.key)}"></span>`;
@@ -432,12 +467,20 @@ const MapView = (() => {
    * drawn transparent. Reprojection to Web Mercator is handled by
    * georaster-layer-for-leaflet, so a UTM 37S raster works as-is.
    */
+  /** Ramp for a hazard surface, keyed by the hazard's own id. */
+  function hazardRampFor(hazardCfg) {
+    const id = hazardCfg && hazardCfg.__id;
+    return (id && CRVA_CONFIG.hazardRamps && CRVA_CONFIG.hazardRamps[id])
+      || CRVA_CONFIG.floodRamp;
+  }
+
   function renderHazardRaster(georaster, hazardCfg) {
     if (hazardLayer) { map.removeLayer(hazardLayer); hazardLayer = null; }
+    activeHazardCfg = hazardCfg || null;
     if (!georaster || typeof GeoRasterLayer !== "function") return null;
 
     const noData = hazardCfg.hazardNoData || [];
-    const ramp = CRVA_CONFIG.floodRamp;
+    const ramp = hazardRampFor(hazardCfg);
 
     hazardLayer = new GeoRasterLayer({
       georaster,
@@ -457,15 +500,36 @@ const MapView = (() => {
 
   function renderHazardLayer(geojson, hazardCfg) {
     if (hazardLayer) { map.removeLayer(hazardLayer); hazardLayer = null; }
+    activeHazardCfg = hazardCfg || null;
     if (!geojson) return null;
 
     const field = hazardCfg.hazardClassField;
+
+    // Continuous hazard (e.g. cold/heat 0.36–0.94): Jenks-class it into 1–5.
+    let contScheme = null;
+    if (hazardCfg.hazardContinuous) {
+      const vals = geojson.features
+        .map(f => DataService.getField(f, field))
+        .filter(v => typeof v === "number" && isFinite(v));
+      contScheme = DataService.buildClassification(
+        geojson.features,
+        { indices: { _h: field }, classify: { _h: "jenks" } },
+        "_h"
+      );
+      activeHazardContScheme = contScheme;
+    } else {
+      activeHazardContScheme = null;
+    }
+
     hazardLayer = L.geoJSON(geojson, {
       pane: "hazardPane",        // always beneath the choropleth
       renderer: hazardRenderer,
       style: f => {
-        const v = DataService.getField(f, field);
-        const c = (v >= 1 && v <= 5) ? CRVA_CONFIG.floodRamp[v - 1] : "transparent";
+        const ramp = hazardRampFor(hazardCfg);
+        const raw = DataService.getField(f, field);
+        const c = contScheme
+          ? (ramp[(contScheme.classOf(raw) || 1) - 1] || "transparent")
+          : ((raw >= 1 && raw <= 5) ? ramp[raw - 1] : "transparent");
         return { fillColor: c, fillOpacity: 0.75, color: c, weight: 0.2 };
       },
       interactive: false
@@ -592,7 +656,7 @@ const MapView = (() => {
   return {
     init, setBasemap,
     renderIndexLayer, restyleIndexLayer,
-    renderHazardLayer, renderHazardRaster, toggleHazard,
+    renderHazardLayer, renderHazardRaster, renderHazardLegend, toggleHazard,
     renderAssetLayer, toggleAssets, filterAssetsByParent,
     toggleIndex, setIndexOpacity,
     addControlPanel, setPanelLayer,

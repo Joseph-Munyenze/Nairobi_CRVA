@@ -15,7 +15,7 @@
     showAssets: true,
     showIndex: true,
     indexOpacity: 0.8,
-    basemap: "positron",
+    basemap: "light",
     focusParent: null,           // sublocation the asset layer is filtered to
     data: {
       index: null,               // index polygon GeoJSON
@@ -64,13 +64,38 @@
 
   function buildFilters() {
     fillSelect($("hazardSelect"), CRVA_CONFIG.hazards, state.hazard);
-    fillSelect($("sectorSelect"), CRVA_CONFIG.sectors, state.sector);
-    fillSubsectors();
 
-    // Component radios
+    // Sector select, with a leading "None" option so the user can view a hazard
+    // surface on its own without any subsector overlay.
+    const secEl = $("sectorSelect");
+    secEl.innerHTML = "";
+    const noneOpt = document.createElement("option");
+    noneOpt.value = "__none__";
+    noneOpt.textContent = "None — hazard only";
+    if (state.sector === "__none__") noneOpt.selected = true;
+    secEl.appendChild(noneOpt);
+    Object.entries(CRVA_CONFIG.sectors).forEach(([key, node]) => {
+      const opt = document.createElement("option");
+      opt.value = key;
+      opt.textContent = node.enabled ? node.label : `${node.label} — coming soon`;
+      opt.disabled = !node.enabled;
+      if (key === state.sector) opt.selected = true;
+      secEl.appendChild(opt);
+    });
+
+    fillSubsectors();
+    buildComponentRadios();
+  }
+
+  function buildComponentRadios() {
     const wrap = $("componentGroup");
     wrap.innerHTML = "";
-    CRVA_CONFIG.components.forEach(c => {
+    if (state.sector === "__none__") return;   // no components in hazard-only mode
+    const comps = DataService.componentsFor(subsectorCfg());
+    if (!comps.some(c => c.key === state.component)) {
+      state.component = comps[0] ? comps[0].key : state.component;
+    }
+    comps.forEach(c => {
       const id = `comp_${c.key}`;
       const row = document.createElement("label");
       row.className = "radio-row";
@@ -90,6 +115,13 @@
   }
 
   function fillSubsectors() {
+    const subEl = $("subsectorSelect");
+    if (state.sector === "__none__") {
+      subEl.innerHTML = '<option>—</option>';
+      subEl.disabled = true;
+      return;
+    }
+    subEl.disabled = false;
     const sector = CRVA_CONFIG.sectors[state.sector];
     const subs = sector ? sector.subsectors : {};
     const keys = Object.keys(subs);
@@ -97,7 +129,7 @@
       const firstEnabled = keys.find(k => subs[k].enabled);
       state.subsector = firstEnabled || keys[0];
     }
-    fillSelect($("subsectorSelect"), subs, state.subsector);
+    fillSelect(subEl, subs, state.subsector);
   }
 
   function wireFilters() {
@@ -109,6 +141,7 @@
     $("sectorSelect").addEventListener("change", e => {
       state.sector = e.target.value;
       fillSubsectors();
+      buildComponentRadios();
       loadAndRender();
     });
 
@@ -144,16 +177,21 @@
 
   /** Layer list for the on-canvas panel — built from config, not hard-coded. */
   function buildControlPanel(ss, haveHazard, hazardPath) {
-    const layers = [
-      { key: "index",  label: "Sublocation choropleth", checked: state.showIndex },
-      { key: "hazard", label: CRVA_CONFIG.hazards[state.hazard].label,
-        checked: state.showHazard && haveHazard,
-        disabled: !haveHazard,
-        title: haveHazard ? "" : `Add ${hazardPath} to switch this layer on` },
-      { key: "assets", label: ss.assetLabel || "Assets",
+    const layers = [];
+    if (ss) {
+      const unitLabel = ss.unitLabel || "Sublocation";
+      layers.push({ key: "index", label: `${unitLabel} choropleth`, checked: state.showIndex });
+    }
+    layers.push({ key: "hazard", label: CRVA_CONFIG.hazards[state.hazard].label,
+      checked: state.showHazard && haveHazard,
+      disabled: !haveHazard,
+      title: haveHazard ? "" : `Add ${hazardPath} to switch this layer on` });
+    // Asset toggle only for subsectors that have a point layer
+    if (ss && ss.assetLayer) {
+      layers.push({ key: "assets", label: ss.assetLabel || "Assets",
         checked: state.showAssets && !!state.data.assets,
-        disabled: !state.data.assets }
-    ];
+        disabled: !state.data.assets });
+    }
 
     MapView.addControlPanel(layers, {
       onBasemap: key => {
@@ -163,14 +201,14 @@
       onLayer: (key, on) => {
         if (key === "index")  { state.showIndex = on;  MapView.toggleIndex(on); }
         if (key === "hazard") { state.showHazard = on; MapView.toggleHazard(on);
-          MapView.restyleIndexLayer(subsectorCfg(), state.component, state.schemes); }
+          if (subsectorCfg()) MapView.restyleIndexLayer(subsectorCfg(), state.component, state.schemes); }
         if (key === "assets") { state.showAssets = on; MapView.toggleAssets(on); }
       },
       onOpacity: v => {
         state.indexOpacity = v;
-        MapView.setIndexOpacity(v, subsectorCfg(), state.component, state.schemes);
+        if (subsectorCfg()) MapView.setIndexOpacity(v, subsectorCfg(), state.component, state.schemes);
       }
-    }, state.basemap);
+    }, state.basemap, !ss);   // hideOpacity when no choropleth
   }
 
   function setStatus(kind, message) {
@@ -188,11 +226,45 @@
   }
 
   async function loadAndRender() {
-    const ss = subsectorCfg();
     MapView.clearAll();
     Charts.destroyAll();
     state.focusParent = null;
 
+    // ---- Hazard-only mode (sector = None): show just the hazard surface ----
+    if (state.sector === "__none__") {
+      const hz = CRVA_CONFIG.hazards[state.hazard] || {};
+      if (!hz.enabled) { showEmptyState(true); setStatus("", ""); return; }
+      showEmptyState(false);
+      setStatus("loading", '<span class="spinner"></span> Loading hazard…');
+      try {
+        state.data.index = null;
+        state.data.assets = null;
+        state.data.hazardRaster = hz.hazardRaster
+          ? await DataService.loadRaster(hz.hazardRaster) : null;
+        state.data.hazard = (!state.data.hazardRaster && hz.hazardLayer)
+          ? await DataService.loadGeoJSON(hz.hazardLayer, { optional: true }) : null;
+
+        const haveHazard = !!(state.data.hazardRaster || state.data.hazard);
+        const hzCfg = { ...hz, __id: state.hazard };
+        if (state.data.hazardRaster) MapView.renderHazardRaster(state.data.hazardRaster, hzCfg);
+        else MapView.renderHazardLayer(state.data.hazard, hzCfg);
+        if (haveHazard) MapView.toggleHazard(true);
+        MapView.fitToData();
+
+        buildControlPanel(null, haveHazard, hz.hazardRaster || hz.hazardLayer);
+        renderHazardOnlyStats(hz);
+        MapView.renderHazardLegend(hzCfg);   // legend shows hazard classes
+        setStatus(haveHazard ? "" : "warn",
+          haveHazard ? "" : "Hazard surface not loaded for this hazard.");
+      } catch (err) {
+        console.error(err);
+        setStatus("error", `Could not load the hazard. ${err.message}`);
+        MapView.clearAll();
+      }
+      return;
+    }
+
+    const ss = subsectorCfg();
     if (!selectionEnabled()) {
       showEmptyState(true);
       setStatus("", "");
@@ -228,9 +300,9 @@
         );
       }
 
-      // Classification for every component, once per data load
+      // Classification for every component this subsector exposes
       state.schemes = {};
-      CRVA_CONFIG.components.forEach(c => {
+      DataService.componentsFor(ss).forEach(c => {
         state.schemes[c.key] = DataService.buildClassification(
           state.data.index.features, ss, c.key
         );
@@ -248,7 +320,7 @@
       if (!haveHazard) {
         state.showHazard = false;
         setStatus("warn",
-          `Flood hazard surface not loaded. Drop it at ` +
+          `${CRVA_CONFIG.hazards[state.hazard].label} surface not loaded. Drop it at ` +
           `<code>${hazardPath}</code> and reload — no code changes needed.`);
       } else {
         setStatus("", "");
@@ -262,6 +334,15 @@
     }
   }
 
+  /** Minimal stats panel for hazard-only mode. */
+  function renderHazardOnlyStats(hz) {
+    $("statsContent").style.display = "none";
+    $("statsEmpty").style.display = "block";
+    $("statsEmpty").innerHTML =
+      `Showing the <strong>${hz.label}</strong> surface only. ` +
+      `Choose a sector to overlay a subsector assessment.`;
+  }
+
   /* ------------------------------------------------------------ rendering */
 
   function renderAll({ fit = false, restyleOnly = false } = {}) {
@@ -272,6 +353,7 @@
       MapView.restyleIndexLayer(ss, state.component, state.schemes);
     } else {
       const hzCfg = CRVA_CONFIG.hazards[state.hazard] || {};
+      hzCfg.__id = state.hazard;
       if (state.data.hazardRaster) {
         MapView.renderHazardRaster(state.data.hazardRaster, hzCfg);
       } else {
@@ -294,34 +376,78 @@
   function renderStats(ss) {
     const features = state.data.index.features;
     const scheme = state.schemes[state.component];
+    const unitLabel = ss.unitLabel || "Sublocations";
+    const unitOne = ss.unitLabelOne || "sublocation";
+    const hasAssets = !!ss.assetLayer && !!state.data.assets;
 
-    // --- KPI cards
-    const k = Stats.kpis(features, state.assetStats);
-    $("kpiUnits").textContent = k.units;
-    $("kpiAssets").textContent = k.assets.toLocaleString();
-    $("kpiVeryHigh").textContent = k.veryHigh.toLocaleString();
-    $("kpiVeryHighPct").textContent = `${k.veryHighPct}% of all ${ss.assetLabel.toLowerCase()}`;
-    $("kpiHighPlus").textContent = k.highPlus.toLocaleString();
-    $("kpiHighPlusPct").textContent = `${k.highPlusPct}% of all ${ss.assetLabel.toLowerCase()}`;
-    $("kpiAssetLabel").textContent = ss.assetLabel;
-
-    // --- Charts
-    $("chartATitle").textContent = `${ss.assetLabel} by flood risk zone`;
-    Charts.renderAssetRiskChart("chartAssets", state.assetStats, ss.assetLabel);
-
+    // Distribution of the index polygons across the active component's classes
     const dist = Stats.classDistribution(features, ss, state.component, scheme);
-    $("chartBTitle").textContent =
-      `Sublocations by ${DataService.componentLabel(state.component).toLowerCase()} class`;
-    Charts.renderClassDonut("chartClasses", dist, state.component);
 
-    // --- Top 5 by component
+    // --- KPI cards ------------------------------------------------------
+    if (hasAssets) {
+      const k = Stats.kpis(features, state.assetStats);
+      $("kpiUnits").textContent = k.units;
+      $("kpiAssets").textContent = k.assets.toLocaleString();
+      $("kpiVeryHigh").textContent = k.veryHigh.toLocaleString();
+      $("kpiVeryHighPct").textContent = `${k.veryHighPct}% of all ${ss.assetLabel.toLowerCase()}`;
+      $("kpiHighPlus").textContent = k.highPlus.toLocaleString();
+      $("kpiHighPlusPct").textContent = `${k.highPlusPct}% of all ${ss.assetLabel.toLowerCase()}`;
+      $("kpiAssetLabel").textContent = ss.assetLabel;
+      $("kpiUnitsLabel").textContent = `${unitLabel} analysed`;
+      $("kpiVeryHighLabel").textContent = "In very high risk zones";
+      $("kpiHighPlusLabel").textContent = "In high + very high zones";
+      state.lastStats = { kpis: k };
+    } else {
+      // Polygon-only subsector: KPIs describe the index polygons themselves
+      const vhigh = dist.dist[5] || 0;
+      const high = dist.dist[4] || 0;
+      const classified = features.length - dist.noData;
+      const pct = n => (classified ? ((n / classified) * 100).toFixed(1) : "0.0");
+      const compLabel = DataService.componentLabel(state.component).toLowerCase();
+
+      $("kpiUnits").textContent = features.length;
+      $("kpiAssets").textContent = classified.toLocaleString();
+      $("kpiAssetLabel").textContent = `${unitLabel} classified`;
+      $("kpiUnitsLabel").textContent = `${unitLabel} analysed`;
+      $("kpiVeryHigh").textContent = vhigh.toLocaleString();
+      $("kpiVeryHighLabel").textContent = `Highest ${compLabel} class`;
+      $("kpiVeryHighPct").textContent = `${pct(vhigh)}% of ${unitLabel.toLowerCase()}`;
+      $("kpiHighPlus").textContent = (high + vhigh).toLocaleString();
+      $("kpiHighPlusLabel").textContent = "Top two classes";
+      $("kpiHighPlusPct").textContent = `${pct(high + vhigh)}% of ${unitLabel.toLowerCase()}`;
+      state.lastStats = { kpis: {
+        units: features.length, assets: classified,
+        veryHigh: vhigh, veryHighPct: pct(vhigh),
+        highPlus: high + vhigh, highPlusPct: pct(high + vhigh)
+      } };
+    }
+
+    // --- Chart A --------------------------------------------------------
+    if (hasAssets) {
+      $("chartATitle").textContent = `${ss.assetLabel} by flood risk zone`;
+      Charts.renderAssetRiskChart("chartAssets", state.assetStats, ss.assetLabel);
+    } else {
+      // Bar of index-polygon counts per class for the active component
+      const barStats = { byClass: dist.dist };
+      $("chartATitle").textContent =
+        `${unitLabel} by ${DataService.componentLabel(state.component).toLowerCase()} class`;
+      Charts.renderAssetRiskChart("chartAssets", barStats, unitLabel, state.component);
+    }
+
+    // --- Chart B (class donut) -----------------------------------------
+    $("chartBTitle").textContent =
+      `${unitLabel} by ${DataService.componentLabel(state.component).toLowerCase()} class`;
+    Charts.renderClassDonut("chartClasses", dist, state.component);
+    state.lastStats.dist = dist;
+
+    // --- Top 5 by component --------------------------------------------
     const inverted = DataService.isInverted(state.component);
     $("topComponentTitle").textContent = inverted
-      ? "Top 5 sublocations with the lowest adaptive capacity"
-      : `Top 5 sublocations by ${DataService.componentLabel(state.component).toLowerCase()}`;
+      ? `Top 5 ${unitLabel.toLowerCase()} with the lowest ${DataService.componentLabel(state.component).toLowerCase()}`
+      : `Top 5 ${unitLabel.toLowerCase()} by ${DataService.componentLabel(state.component).toLowerCase()}`;
 
     const topA = Stats.topByComponent(features, ss, state.component, scheme);
-    state.lastStats = { kpis: k, dist, topA };
+    state.lastStats.topA = topA;
     $("topComponentList").innerHTML = topA.length ? topA.map((r, i) => `
       <li class="rank-row" data-name="${r.name}">
         <span class="rank-n">${i + 1}</span>
@@ -335,22 +461,50 @@
       row.addEventListener("click", () => MapView.zoomToFeatureByName(row.dataset.name));
     });
 
-    // --- Top 5 by very-high-risk assets
-    const topB = Stats.topByAssetRisk(features, ss, state.assetStats);
-    state.lastStats.topB = topB;
-    $("topAssetTitle").textContent =
-      `Top 5 sublocations by very-high-risk ${ss.assetLabel.toLowerCase()}`;
-    $("topAssetList").innerHTML = topB.length ? topB.map((r, i) => `
-      <li class="rank-row" data-name="${r.name}">
-        <span class="rank-n">${i + 1}</span>
-        <span class="rank-name">${r.name}</span>
-        <span class="rank-val strong">${r.value} of ${r.total}</span>
-        <span class="rank-chip" style="background:${DataService.colorForClass(5, "risk")}">Very High</span>
-      </li>`).join("") : `<li class="rank-empty">No ${ss.assetLabel.toLowerCase()} in the highest risk class.</li>`;
-
-    $("topAssetList").querySelectorAll(".rank-row").forEach(row => {
-      row.addEventListener("click", () => focusOnParent(row.dataset.name, ss));
-    });
+    // --- Second ranking -------------------------------------------------
+    if (hasAssets) {
+      const topB = Stats.topByAssetRisk(features, ss, state.assetStats);
+      state.lastStats.topB = topB;
+      $("topAssetTitle").textContent =
+        `Top 5 ${unitOne}s by very-high-risk ${ss.assetLabel.toLowerCase()}`;
+      $("topAssetList").innerHTML = topB.length ? topB.map((r, i) => `
+        <li class="rank-row" data-name="${r.name}">
+          <span class="rank-n">${i + 1}</span>
+          <span class="rank-name">${r.name}</span>
+          <span class="rank-val strong">${r.value} of ${r.total}</span>
+          <span class="rank-chip" style="background:${DataService.colorForClass(5, "risk")}">Very High</span>
+        </li>`).join("") : `<li class="rank-empty">No ${ss.assetLabel.toLowerCase()} in the highest risk class.</li>`;
+      $("topAssetList").querySelectorAll(".rank-row").forEach(row => {
+        row.addEventListener("click", () => focusOnParent(row.dataset.name, ss));
+      });
+    } else {
+      // No assets: second panel ranks by the subsector's secondary component
+      // (e.g. Exposure) if one exists, else hides.
+      const comps = DataService.componentsFor(ss);
+      const secondary = comps.find(c => c.key !== state.component);
+      if (secondary) {
+        const sScheme = state.schemes[secondary.key];
+        const topB2 = Stats.topByComponent(features, ss, secondary.key, sScheme);
+        state.lastStats.topB = topB2.map(r => ({ name: r.name, value: r.value, total: null }));
+        $("topAssetTitle").textContent =
+          `Top 5 ${unitLabel.toLowerCase()} by ${secondary.label.toLowerCase()}`;
+        $("topAssetList").innerHTML = topB2.length ? topB2.map((r, i) => `
+          <li class="rank-row" data-name="${r.name}">
+            <span class="rank-n">${i + 1}</span>
+            <span class="rank-name">${r.name}</span>
+            <span class="rank-val">${r.value.toFixed(r.value >= 100 ? 0 : 4)}</span>
+            <span class="rank-chip" style="background:${DataService.colorForClass(r.cls, secondary.key)}">
+              ${DataService.classLabel(r.cls)}</span>
+          </li>`).join("") : `<li class="rank-empty">No values available.</li>`;
+        $("topAssetList").querySelectorAll(".rank-row").forEach(row => {
+          row.addEventListener("click", () => MapView.zoomToFeatureByName(row.dataset.name));
+        });
+      } else {
+        state.lastStats.topB = [];
+        $("topAssetTitle").textContent = "";
+        $("topAssetList").innerHTML = "";
+      }
+    }
   }
 
   /* ---------------------------------------------------------------- export */
@@ -385,11 +539,16 @@
     btn.textContent = "Building report…";
 
     try {
+      const secondaryComp = DataService.componentsFor(ss).find(c => c.key !== state.component);
       await Report.build({
         hazardLabel:    CRVA_CONFIG.hazards[state.hazard].label,
         sectorLabel:    CRVA_CONFIG.sectors[state.sector].label,
         subsectorLabel: ss.label,
+        hasAssets:      !!ss.assetLayer && !!state.data.assets,
         assetLabel:     ss.assetLabel || "Assets",
+        unitLabel:      ss.unitLabel || "Sublocations",
+        unitLabelOne:   ss.unitLabelOne || "sublocation",
+        secondaryLabel: secondaryComp ? secondaryComp.label : null,
         componentKey:   state.component,
         componentLabel: DataService.componentLabel(state.component),
         inverted:       DataService.isInverted(state.component),

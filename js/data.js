@@ -88,6 +88,56 @@ const DataService = (() => {
   /* -------------------------------------------------------- classification */
 
   /**
+   * Jenks natural-breaks: returns the upper bound of each of nClasses classes.
+   * Standard Fisher-Jenks dynamic programming over the sorted values. For 147
+   * features x 5 classes this is instant.
+   */
+  function jenksBreaks(data, nClasses) {
+    const values = [...data].sort((a, b) => a - b);
+    const n = values.length;
+    if (n <= nClasses) {
+      const b = values.slice();
+      while (b.length < nClasses) b.push(values[values.length - 1]);
+      return b;
+    }
+    const mat1 = Array.from({ length: n + 1 }, () => new Array(nClasses + 1).fill(0));
+    const mat2 = Array.from({ length: n + 1 }, () => new Array(nClasses + 1).fill(0));
+    for (let i = 1; i <= nClasses; i++) {
+      mat1[1][i] = 1; mat2[1][i] = 0;
+      for (let j = 2; j <= n; j++) mat2[j][i] = Infinity;
+    }
+    for (let l = 2; l <= n; l++) {
+      let s1 = 0, s2 = 0, w = 0;
+      for (let m = 1; m <= l; m++) {
+        const i3 = l - m + 1;
+        const val = values[i3 - 1];
+        s2 += val * val; s1 += val; w += 1;
+        const variance = s2 - (s1 * s1) / w;
+        const i4 = i3 - 1;
+        if (i4 !== 0) {
+          for (let j = 2; j <= nClasses; j++) {
+            if (mat2[l][j] >= variance + mat2[i4][j - 1]) {
+              mat1[l][j] = i3;
+              mat2[l][j] = variance + mat2[i4][j - 1];
+            }
+          }
+        }
+      }
+      mat1[l][1] = 1;
+      mat2[l][1] = s2 - (s1 * s1) / w;
+    }
+    const breaks = new Array(nClasses);
+    breaks[nClasses - 1] = values[n - 1];
+    let k = n;
+    for (let j = nClasses; j >= 2; j--) {
+      const id = mat1[k][j] - 2;
+      breaks[j - 2] = values[id];
+      k = mat1[k][j] - 1;
+    }
+    return breaks;
+  }
+
+  /**
    * Build a 5-class scheme for one component.
    * If every valid value is already an integer 1-5 the values are used
    * directly; otherwise equal-interval breaks are cut over the layer min-max.
@@ -125,6 +175,54 @@ const DataService = (() => {
       return scheme;
     }
 
+    // Classification method: a subsector may request "quantile" or "jenks"
+    // per component (subsector.classify), else the global default (jenks).
+    const requested = (subsector.classify && subsector.classify[componentKey])
+      || CRVA_CONFIG.defaultClassify || "jenks";
+
+    if (requested === "jenks" && values.length > nClasses) {
+      scheme.method = "jenks";
+      scheme.breaks = jenksBreaks(values, nClasses);
+      scheme.classOf = v => {
+        if (v === null) return null;
+        for (let i = 0; i < nClasses; i++) {
+          if (v <= scheme.breaks[i]) return i + 1;
+        }
+        return nClasses;
+      };
+      if (excluded > 0) {
+        console.info(`[data] ${componentKey}: ${excluded} excluded, ` +
+          `${values.length} classified (jenks).`);
+      }
+      return scheme;
+    }
+
+    if (requested === "quantile" && values.length >= nClasses) {
+      const sorted = [...values].sort((a, b) => a - b);
+      scheme.method = "quantile";
+      // Upper bound of each class = the k/n quantile of the sorted values.
+      for (let i = 1; i <= nClasses; i++) {
+        const idx = Math.min(sorted.length - 1,
+          Math.ceil((i / nClasses) * sorted.length) - 1);
+        scheme.breaks.push(sorted[idx]);
+      }
+      // Ensure strictly usable breaks even with ties.
+      scheme.classOf = v => {
+        if (v === null) return null;
+        for (let i = 0; i < nClasses; i++) {
+          if (v <= scheme.breaks[i]) return i + 1;
+        }
+        return nClasses;
+      };
+      if (excluded > 0) {
+        console.info(
+          `[data] ${componentKey}: ${excluded} excluded, ` +
+          `${values.length} classified (quantile).`
+        );
+      }
+      return scheme;
+    }
+
     // Equal-interval breaks over min-max
     const span = scheme.max - scheme.min;
     const step = span / nClasses;
@@ -150,6 +248,21 @@ const DataService = (() => {
   }
 
   /* ------------------------------------------------------ colours & labels */
+
+  /**
+   * Components to show for a subsector. A subsector may declare its own
+   * `components` array (e.g. air quality: index/exposure, not the health five);
+   * otherwise the global CRVA list is used. Every key referenced must also
+   * exist in CRVA_CONFIG.components so labels and inversion resolve.
+   */
+  function componentsFor(subsector) {
+    if (subsector && Array.isArray(subsector.components) && subsector.components.length) {
+      return subsector.components
+        .map(key => CRVA_CONFIG.components.find(c => c.key === key))
+        .filter(Boolean);
+    }
+    return CRVA_CONFIG.components;
+  }
 
   function isInverted(componentKey) {
     const c = CRVA_CONFIG.components.find(x => x.key === componentKey);
@@ -271,6 +384,7 @@ const DataService = (() => {
     componentLabel,
     rampFor,
     isInverted,
+    componentsFor,
     joinPointsToPolygons,
     pointInFeature
   };

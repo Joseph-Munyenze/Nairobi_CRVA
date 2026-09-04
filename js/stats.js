@@ -146,11 +146,14 @@ const Stats = (() => {
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
 
-    const comps = CRVA_CONFIG.components;
+    const comps = DataService.componentsFor(subsector);
+    const hasAssets = !!subsector.assetLayer;
     const header = [subsector.nameField];
     comps.forEach(c => header.push(`${c.label} value`, `${c.label} class`));
-    header.push("Assets total");
-    CRVA_CONFIG.classes.forEach(c => header.push(`Assets ${c.label} risk`));
+    if (hasAssets) {
+      header.push("Assets total");
+      CRVA_CONFIG.classes.forEach(c => header.push(`Assets ${c.label} risk`));
+    }
 
     const lines = [header.map(esc).join(",")];
 
@@ -162,9 +165,11 @@ const Stats = (() => {
         row.push(v === null ? "" : v);
         row.push(v === null ? "No data" : DataService.classLabel(schemes[c.key].classOf(v)));
       });
-      const rec = assetStats.byParent.get(name);
-      row.push(rec ? rec.total : 0);
-      CRVA_CONFIG.classes.forEach(c => row.push(rec ? rec.byClass[c.value] : 0));
+      if (hasAssets) {
+        const rec = assetStats.byParent.get(name);
+        row.push(rec ? rec.total : 0);
+        CRVA_CONFIG.classes.forEach(c => row.push(rec ? rec.byClass[c.value] : 0));
+      }
       lines.push(row.map(esc).join(","));
     });
 

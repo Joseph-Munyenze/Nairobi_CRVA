@@ -21,10 +21,10 @@ const Charts = (() => {
 
   /* --------------------------------------- Chart A — assets by risk zone */
 
-  function renderAssetRiskChart(canvasId, assetStats, assetLabel) {
+  function renderAssetRiskChart(canvasId, assetStats, assetLabel, componentKey = "risk") {
     const labels = CRVA_CONFIG.classes.map(c => c.label);
     const data = CRVA_CONFIG.classes.map(c => assetStats.byClass[c.value] || 0);
-    const colors = CRVA_CONFIG.classes.map(c => DataService.colorForClass(c.value, "risk"));
+    const colors = CRVA_CONFIG.classes.map(c => DataService.colorForClass(c.value, componentKey));
     const total = data.reduce((a, b) => a + b, 0);
 
     const cfg = {
