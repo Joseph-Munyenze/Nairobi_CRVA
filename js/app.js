@@ -15,7 +15,7 @@
     showAssets: true,
     showIndex: true,
     indexOpacity: 0.8,
-    basemap: "light",
+    basemap: "streets",
     focusParent: null,           // sublocation the asset layer is filtered to
     data: {
       index: null,               // index polygon GeoJSON
