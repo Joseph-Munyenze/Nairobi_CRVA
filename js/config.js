@@ -41,21 +41,25 @@ const CRVA_CONFIG = {
       subsectors: {
         health: {
           label: "Health (Flood)", enabled: true,
-          indexLayer: "data/health_sublocations.geojson",
-          nameField: "SLNAME", popField: "total_pop",
-          components: ["risk", "exposure", "sensitivity", "vulnerability", "adaptiveCapacity"],
+          indexLayer: "data/flood_health_areas.geojson",
+          nameField: "Name",
+          // Facilities aggregated into the 147 KNBS areas as a visible choropleth.
+          components: ["facVeryHigh", "facHighPlus", "facTotal"],
           indices: {
-            exposure: "Weighted_E", sensitivity: "Sensitivit",
-            adaptiveCapacity: "AdaptiveCa", vulnerability: "Vulnerabil", risk: "Health_Ris"
+            facVeryHigh: "facVeryHigh",
+            facHighPlus: "facHighPlus",
+            facTotal:    "facTotal"
           },
-          noData: { field: "total_pop", equals: 0,
-                    appliesTo: ["sensitivity", "adaptiveCapacity", "vulnerability", "risk"] },
+          classify: { facVeryHigh: "jenks", facHighPlus: "jenks", facTotal: "jenks" },
+          unitLabel: "Areas", unitLabelOne: "area",
           extraFields: [
-            { field: "total_pop",  label: "Total population",  format: "int" },
-            { field: "Pop_Under5", label: "Population under 5", format: "int" },
-            { field: "Pop_Over65", label: "Population over 65", format: "int" },
-            { field: "Division",   label: "Division",           format: "text" }
+            { field: "facTotal",    label: "Health facilities (total)", format: "int" },
+            { field: "facVeryHigh", label: "In very high risk",         format: "int" },
+            { field: "facHigh",     label: "In high risk",              format: "int" },
+            { field: "facModerate", label: "In moderate risk",          format: "int" },
+            { field: "zoneLabel",   label: "Air-quality hazard zone",   format: "text" }
           ],
+          // The original facility points remain available as an optional overlay.
           assetLayer: "data/health_facilities.geojson",
           assetLabel: "Health Facilities", assetLabelOne: "health facility",
           assetNameField: "Facility_N", assetRiskField: "RiskZone",
@@ -130,7 +134,10 @@ const CRVA_CONFIG = {
     { key: "adaptiveCapacity", label: "Adaptive Capacity", inverted: true },
     { key: "adaptiveCap",      label: "Adaptive Capacity", inverted: true },
     { key: "hazardZone",       label: "Hazard Zone" },
-    { key: "hazardMean",       label: "Hazard (mean)" }
+    { key: "hazardMean",       label: "Hazard (mean)" },
+    { key: "facTotal",         label: "Health Facilities (total)" },
+    { key: "facHighPlus",      label: "Facilities in High + Very High Risk" },
+    { key: "facVeryHigh",      label: "Facilities in Very High Risk" }
   ],
 
   classes: [

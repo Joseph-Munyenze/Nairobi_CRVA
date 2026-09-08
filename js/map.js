@@ -33,7 +33,7 @@ const MapView = (() => {
     const ESRI  = "Esri, Maxar, Earthstar Geographics";
     const ESRIC = "Esri, HERE, Garmin, &copy; OpenStreetMap contributors";
 
-    // All keyless sources. CARTO tiles were dropped because their CDN now returns an
+    // All keyless. CARTO tiles were dropped because their CDN now returns an
     // "API key required" wall at higher zooms.
     baseLayers = {
       light: {
